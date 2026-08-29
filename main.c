@@ -81,9 +81,14 @@ double get_cpu_usage(void)
 }
 
 
-double bytes_to_gb(uint64_t bytes)
+double bytes_to_gb(uint64_t bytes) //converts bytes to gigabytes - divide by 10^9
 {
     return (double)bytes / (1024.0 * 1024.0 * 1024.0);
+}
+
+double bytes_to_mb(uint64_t bytes) //converts bytes to megabytes - divide by 10^6
+{
+    return (double)bytes / (1024.0 * 1024.0);
 }
 
 
@@ -231,7 +236,7 @@ int main(void)
 
         struct proc_taskinfo task_info;
 
-        int result = proc_pidinfo(
+        int result = proc_pidinfo( //gets task/process information for PID pids[i]
             pids[i],
             PROC_PIDTASKINFO,
             0,
@@ -254,16 +259,17 @@ int main(void)
         }
 
 
-        uint64_t cpu_time =
-            task_info.pti_total_user +
-            task_info.pti_total_system; //cummulative cpu time
+        uint64_t cpu_time = task_info.pti_total_user + task_info.pti_total_system; //cummulative cpu time accumulated by process
+
+        uint64_t memory = task_info.pti_resident_size; //how much resident memory the process is currently using
 
 
         printf(
-            "%d  %-30s CPU time: %llu\n",
+            "%d  %-30s CPU time: %llu  Memory: %.2f MB\n",
             pids[i],
             name,
-            cpu_time
+            cpu_time,
+            bytes_to_mb(memory)
         );
     }
 
