@@ -34,7 +34,6 @@ void get_cpu_ticks(host_cpu_load_info_data_t *cpu_info)
     }
 }
 
-
 double get_cpu_usage(void)
 {
     host_cpu_load_info_data_t first;
@@ -186,6 +185,18 @@ int get_process_snapshot(Process processes[], int max_processes)
 
 }
 
+int find_process(Process processes[], int process_count, pid_t pid)
+//this function tells us where is PID X in this process array
+{
+    for(int i = 0; i < process_count; i++)
+    {
+        if(processes[i].pid == pid)
+        {
+            return i; //return its array position
+        }
+    }
+    return -1; //if the process pid doesnt exist
+}
 
 int main(void)
 {
@@ -259,19 +270,66 @@ int main(void)
      * PROCESS LIST
      */
 
-    Process processes[MAX_PROCESSES];
+    Process first_snapshot[MAX_PROCESSES];
 
-    int process_count = get_process_snapshot(
-        processes,
+    int first_count = get_process_snapshot(
+        first_snapshot,
         MAX_PROCESSES
     );
 
-    if (process_count == -1)
+    if (first_count == -1)
     {
         return 1;
     }
 
+    sleep(1);
 
+    Process second_snapshot[MAX_PROCESSES];
+
+    int second_count = get_process_snapshot(
+        second_snapshot,
+        MAX_PROCESSES
+    );
+
+    if (second_count==-1)
+    {
+        return 1;
+    }
+
+    //have to match processes by PID
+    //cant calculate a process' CPU usage if we cant find a match (no earlier/later measurement)
+
+    printf("\nPROCESS CPU DELTAS\n");
+    printf("======================================\n");
+
+    for(int i = 0; i < second_count; i++)
+    //for every process in the 2nd snapshot
+    {
+        int first_index = find_process(first_snapshot, first_count, second_snapshot[i].pid);
+        //we find the same PID in the first snapshot
+        if (first_index == -1)
+        {
+            continue;
+        }
+
+        uint64_t first_cpu_time = first_snapshot[first_index].cpu_time;
+        //get the CPU time from one second ago
+
+        uint64_t second_cpu_time = second_snapshot[i].cpu_time;
+        //gets the current CPU time
+
+        uint64_t cpu_time_delta = second_cpu_time - first_cpu_time;
+        //calculates CPU time consumed during the interval
+
+        printf(
+            "%d  %-30s CPU time delta: %llu\n",
+            second_snapshot[i].pid,
+            second_snapshot[i].name,
+            cpu_time_delta
+        );
+        
+    }
+    /*
     printf("PROCESSES\n");
     printf("============================================\n");
 
@@ -284,8 +342,7 @@ int main(void)
         processes[i].cpu_time,
         bytes_to_mb(processes[i].memory)
     );
-}
-
+} */
 
     return 0;
 }
