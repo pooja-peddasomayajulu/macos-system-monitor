@@ -7,6 +7,9 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <libproc.h>
+#define MAX_PROCESSES 4096 //reasonable maximum size for our PID array.
+//enough space to store information of abt up to 4096 process
+//having more than 4096 simultaneously running processes is unlikely
 
 
 void get_cpu_ticks(host_cpu_load_info_data_t *cpu_info)
@@ -115,6 +118,74 @@ typedef struct
     double cpu_percent;
 } Process;
 
+int get_process_snapshot(Process processes[], int max_processes)
+{
+    pid_t pids[MAX_PROCESSES];
+
+    int count = proc_listallpids(pids, sizeof(pids));
+    //retrieves list of all active pids
+
+    if (count == -1)
+    {
+        fprintf(stderr, "proc_listallpids failed\n");
+        return -1;
+    }
+
+    int process_count = 0;
+
+    for(int i = 0; i<count && process_count<max_processes;i++)
+    {
+        char name[256];
+        int name_length = proc_name(pids[i], name, sizeof(name));
+
+        if(name_length<=0)
+        {
+            snprintf(name, sizeof(name), "unknown");
+        }
+
+        //get information about this process
+
+        struct proc_taskinfo task_info;
+
+        int result = proc_pidinfo(
+            pids[i],
+            PROC_PIDTASKINFO,
+            0,
+            &task_info,
+            sizeof(task_info)
+        );
+
+        //the process may have exited between getting the PID list and asking for its information
+        //it is also possible that we dont have access to it
+        //if we cant get the information, skip the process
+
+        if (result != sizeof(task_info))
+        {
+            continue;
+        }
+
+        Process process;
+
+        process.pid = pids[i];
+
+        snprintf(process.name, sizeof(process.name),"%s",name);
+
+        process.memory = task_info.pti_resident_size;
+
+        process.cpu_time = task_info.pti_total_user + task_info.pti_total_system;
+        //this is cummulative cpu time
+
+        process.cpu_percent = 0.0;
+
+        processes[process_count] = process;
+
+        process_count++;
+    }
+
+    return process_count;
+
+}
+
 
 int main(void)
 {
@@ -188,20 +259,15 @@ int main(void)
      * PROCESS LIST
      */
 
-    pid_t pids[4096];
+    Process processes[MAX_PROCESSES];
 
-    int count = proc_listallpids(
-        pids,
-        sizeof(pids)
-    ); //retrieves list of active pids
+    int process_count = get_process_snapshot(
+        processes,
+        MAX_PROCESSES
+    );
 
-    if (count == -1)
+    if (process_count == -1)
     {
-        fprintf(
-            stderr,
-            "proc_listallpids failed\n"
-        );
-
         return 1;
     }
 
@@ -209,69 +275,16 @@ int main(void)
     printf("PROCESSES\n");
     printf("============================================\n");
 
-
-    for (int i = 0; i < count; i++)
-    {
-        char name[256];
-
-        int name_length = proc_name(
-            pids[i],
-            name,
-            sizeof(name)
-        );
-
-        if (name_length <= 0)
-        {
-            snprintf(
-                name,
-                sizeof(name),
-                "unknown"
-            );
-        }
-
-
-        /*
-         * Get information about this process.
-         */
-
-        struct proc_taskinfo task_info;
-
-        int result = proc_pidinfo( //gets task/process information for PID pids[i]
-            pids[i],
-            PROC_PIDTASKINFO,
-            0,
-            &task_info,
-            sizeof(task_info)
-        );
-
-
-        /*
-         * The process may have exited between
-         * getting the PID list and asking for its information.
-         * It is also possible that we don't have access to it.
-         *
-         * If we can't get the information, skip this process.
-         */
-
-        if (result != sizeof(task_info))
-        {
-            continue;
-        }
-
-
-        uint64_t cpu_time = task_info.pti_total_user + task_info.pti_total_system; //cummulative cpu time accumulated by process
-
-        uint64_t memory = task_info.pti_resident_size; //how much resident memory the process is currently using
-
-
-        printf(
-            "%d  %-30s CPU time: %llu  Memory: %.2f MB\n",
-            pids[i],
-            name,
-            cpu_time,
-            bytes_to_mb(memory)
-        );
-    }
+    for (int i = 0; i < process_count; i++)
+{
+    printf(
+        "%d  %-30s CPU time: %llu  Memory: %.2f MB\n",
+        processes[i].pid,
+        processes[i].name,
+        processes[i].cpu_time,
+        bytes_to_mb(processes[i].memory)
+    );
+}
 
 
     return 0;
