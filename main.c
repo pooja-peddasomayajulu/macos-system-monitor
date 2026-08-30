@@ -24,6 +24,8 @@ void get_cpu_ticks(host_cpu_load_info_data_t *cpu_info)
         &count
     );
 
+
+
     if (result != KERN_SUCCESS)
     {
         fprintf(
@@ -173,6 +175,8 @@ int get_process_snapshot(Process processes[], int max_processes)
 
         process.cpu_time = task_info.pti_total_user + task_info.pti_total_system;
         //this is cummulative cpu time
+        //pti_total_user and pti_total_system are CPU time counters
+        //but the counters are not expressed directly in seconds
 
         process.cpu_percent = 0.0;
 
@@ -265,7 +269,6 @@ int main(void)
         total_gb
     );
 
-
     /*
      * PROCESS LIST
      */
@@ -327,7 +330,7 @@ int main(void)
             second_snapshot[i].name,
             cpu_time_delta
         );
-        
+     
     }
     /*
     printf("PROCESSES\n");
