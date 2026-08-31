@@ -12,19 +12,22 @@
 #define MAX_PROCESSES 4096
 #define SAMPLE_INTERVAL 1
 
+
 /*
  * Get system-wide CPU tick information.
  */
 void get_cpu_ticks(host_cpu_load_info_data_t *cpu_info)
 {
-    mach_msg_type_number_t count = HOST_CPU_LOAD_INFO_COUNT;
+    mach_msg_type_number_t count =
+        HOST_CPU_LOAD_INFO_COUNT;
 
-    kern_return_t result = host_statistics64(
-        mach_host_self(),
-        HOST_CPU_LOAD_INFO,
-        (host_info64_t)cpu_info,
-        &count
-    );
+    kern_return_t result =
+        host_statistics64(
+            mach_host_self(),
+            HOST_CPU_LOAD_INFO,
+            (host_info64_t)cpu_info,
+            &count
+        );
 
     if (result != KERN_SUCCESS)
     {
@@ -38,7 +41,7 @@ void get_cpu_ticks(host_cpu_load_info_data_t *cpu_info)
 
 
 /*
- * Calculate CPU usage using two CPU snapshots.
+ * Calculate overall CPU usage.
  */
 double calculate_cpu_usage(
     host_cpu_load_info_data_t *first,
@@ -77,7 +80,9 @@ double calculate_cpu_usage(
         return 0.0;
     }
 
-    return ((double)busy_delta / (double)total_delta) * 100.0;
+    return
+        ((double)busy_delta /
+         (double)total_delta) * 100.0;
 }
 
 
@@ -86,8 +91,9 @@ double calculate_cpu_usage(
  */
 double bytes_to_gb(uint64_t bytes)
 {
-    return (double)bytes /
-           (1024.0 * 1024.0 * 1024.0);
+    return
+        (double)bytes /
+        (1024.0 * 1024.0 * 1024.0);
 }
 
 
@@ -96,26 +102,9 @@ double bytes_to_gb(uint64_t bytes)
  */
 double bytes_to_mb(uint64_t bytes)
 {
-    return (double)bytes /
-           (1024.0 * 1024.0);
-}
-
-
-/*
- * Convert Mach absolute time to seconds.
- */
-double mach_absolute_time_to_seconds(uint64_t time)
-{
-    mach_timebase_info_data_t timebase;
-
-    mach_timebase_info(&timebase);
-
-    double nanoseconds =
-        (double)time *
-        (double)timebase.numer /
-        (double)timebase.denom;
-
-    return nanoseconds / 1000000000.0;
+    return
+        (double)bytes /
+        (1024.0 * 1024.0);
 }
 
 
@@ -130,6 +119,7 @@ typedef struct
     uint64_t active;
     uint64_t inactive;
     uint64_t wired;
+
 } MemoryInfo;
 
 
@@ -139,16 +129,20 @@ typedef struct
 int get_memory_info(MemoryInfo *memory_info)
 {
     vm_statistics64_data_t vm_stat;
-    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
 
-    mach_port_t host = mach_host_self();
+    mach_msg_type_number_t count =
+        HOST_VM_INFO64_COUNT;
 
-    kern_return_t result = host_statistics64(
-        host,
-        HOST_VM_INFO64,
-        (host_info64_t)&vm_stat,
-        &count
-    );
+    mach_port_t host =
+        mach_host_self();
+
+    kern_return_t result =
+        host_statistics64(
+            host,
+            HOST_VM_INFO64,
+            (host_info64_t)&vm_stat,
+            &count
+        );
 
     if (result != KERN_SUCCESS)
     {
@@ -161,12 +155,17 @@ int get_memory_info(MemoryInfo *memory_info)
         return -1;
     }
 
+
+    /*
+     * Get memory page size.
+     */
     vm_size_t page_size;
 
-    result = host_page_size(
-        host,
-        &page_size
-    );
+    result =
+        host_page_size(
+            host,
+            &page_size
+        );
 
     if (result != KERN_SUCCESS)
     {
@@ -179,6 +178,10 @@ int get_memory_info(MemoryInfo *memory_info)
         return -1;
     }
 
+
+    /*
+     * Convert pages into bytes.
+     */
     uint64_t free_pages =
         (uint64_t)vm_stat.free_count -
         (uint64_t)vm_stat.speculative_count;
@@ -192,17 +195,22 @@ int get_memory_info(MemoryInfo *memory_info)
     uint64_t wired_pages =
         (uint64_t)vm_stat.wire_count;
 
+
     memory_info->free =
-        free_pages * (uint64_t)page_size;
+        free_pages *
+        (uint64_t)page_size;
 
     memory_info->active =
-        active_pages * (uint64_t)page_size;
+        active_pages *
+        (uint64_t)page_size;
 
     memory_info->inactive =
-        inactive_pages * (uint64_t)page_size;
+        inactive_pages *
+        (uint64_t)page_size;
 
     memory_info->wired =
-        wired_pages * (uint64_t)page_size;
+        wired_pages *
+        (uint64_t)page_size;
 
 
     /*
@@ -210,21 +218,25 @@ int get_memory_info(MemoryInfo *memory_info)
      */
     uint64_t total_memory;
 
-    size_t size = sizeof(total_memory);
+    size_t size =
+        sizeof(total_memory);
 
-    if (sysctlbyname(
+    if (
+        sysctlbyname(
             "hw.memsize",
             &total_memory,
             &size,
             NULL,
             0
-        ) == -1)
+        ) == -1
+    )
     {
         perror("hw.memsize");
         return -1;
     }
 
-    memory_info->total = total_memory;
+    memory_info->total =
+        total_memory;
 
 
     /*
@@ -240,7 +252,7 @@ int get_memory_info(MemoryInfo *memory_info)
 
 
 /*
- * Information about one process.
+ * Information about a process.
  */
 typedef struct
 {
@@ -258,7 +270,7 @@ typedef struct
 
 
 /*
- * Get a snapshot of all running processes.
+ * Get a snapshot of running processes.
  */
 int get_process_snapshot(
     Process processes[],
@@ -285,9 +297,11 @@ int get_process_snapshot(
 
     int process_count = 0;
 
+
     for (
         int i = 0;
-        i < count && process_count < max_processes;
+        i < count &&
+        process_count < max_processes;
         i++
     )
     {
@@ -296,6 +310,10 @@ int get_process_snapshot(
             continue;
         }
 
+
+        /*
+         * Get process name.
+         */
         char name[256];
 
         int name_length =
@@ -316,7 +334,7 @@ int get_process_snapshot(
 
 
         /*
-         * Get detailed process information.
+         * Get process information.
          */
         struct proc_taskinfo task_info;
 
@@ -341,7 +359,8 @@ int get_process_snapshot(
 
         Process process;
 
-        process.pid = pids[i];
+        process.pid =
+            pids[i];
 
         snprintf(
             process.name,
@@ -350,21 +369,30 @@ int get_process_snapshot(
             name
         );
 
+
+        /*
+         * Resident memory.
+         */
         process.memory =
             task_info.pti_resident_size;
 
 
         /*
-         * These CPU counters are expressed
+         * Cumulative CPU time.
+         *
+         * These counters are expressed
          * in nanoseconds.
          */
         process.cpu_time =
             task_info.pti_total_user +
             task_info.pti_total_system;
 
-        process.cpu_percent = 0.0;
+        process.cpu_percent =
+            0.0;
 
-        processes[process_count] = process;
+
+        processes[process_count] =
+            process;
 
         process_count++;
     }
@@ -374,7 +402,7 @@ int get_process_snapshot(
 
 
 /*
- * Find a process in a snapshot by PID.
+ * Find a process by PID.
  */
 int find_process(
     Process processes[],
@@ -382,9 +410,16 @@ int find_process(
     pid_t pid
 )
 {
-    for (int i = 0; i < process_count; i++)
+    for (
+        int i = 0;
+        i < process_count;
+        i++
+    )
     {
-        if (processes[i].pid == pid)
+        if (
+            processes[i].pid ==
+            pid
+        )
         {
             return i;
         }
@@ -396,7 +431,7 @@ int find_process(
 
 /*
  * Sort processes by CPU usage.
- * Highest CPU usage first.
+ * Highest first.
  */
 int compare_processes_by_cpu(
     const void *a,
@@ -430,7 +465,42 @@ int compare_processes_by_cpu(
 
 
 /*
- * Print the complete monitor screen.
+ * Sort processes by memory usage.
+ * Highest first.
+ */
+int compare_processes_by_memory(
+    const void *a,
+    const void *b
+)
+{
+    const Process *process_a =
+        (const Process *)a;
+
+    const Process *process_b =
+        (const Process *)b;
+
+    if (
+        process_a->memory <
+        process_b->memory
+    )
+    {
+        return 1;
+    }
+
+    if (
+        process_a->memory >
+        process_b->memory
+    )
+    {
+        return -1;
+    }
+
+    return 0;
+}
+
+
+/*
+ * Print the monitor screen.
  */
 void print_monitor(
     int cpu_count,
@@ -441,19 +511,27 @@ void print_monitor(
 )
 {
     /*
-     * Clear the terminal and move cursor
-     * to the top-left corner.
+     * Clear screen.
      */
     printf("\033[2J");
     printf("\033[H");
 
-    printf("============================================\n");
-    printf("              SYSTEM MONITOR                \n");
-    printf("============================================\n\n");
+
+    printf(
+        "============================================\n"
+    );
+
+    printf(
+        "              SYSTEM MONITOR                \n"
+    );
+
+    printf(
+        "============================================\n\n"
+    );
 
 
     /*
-     * CPU
+     * CPU information.
      */
     printf(
         "Logical CPUs: %d\n",
@@ -467,36 +545,48 @@ void print_monitor(
 
 
     /*
-     * Memory
+     * Memory information.
      */
     printf(
-        "Total memory: %.2f GB\n",
-        bytes_to_gb(memory_info->total)
+        "Total memory:    %.2f GB\n",
+        bytes_to_gb(
+            memory_info->total
+        )
     );
 
     printf(
-        "Used memory:  %.2f GB\n",
-        bytes_to_gb(memory_info->used)
+        "Used memory:     %.2f GB\n",
+        bytes_to_gb(
+            memory_info->used
+        )
     );
 
     printf(
-        "Free memory:  %.2f GB\n",
-        bytes_to_gb(memory_info->free)
+        "Free memory:     %.2f GB\n",
+        bytes_to_gb(
+            memory_info->free
+        )
     );
 
     printf(
-        "Active memory: %.2f GB\n",
-        bytes_to_gb(memory_info->active)
+        "Active memory:   %.2f GB\n",
+        bytes_to_gb(
+            memory_info->active
+        )
     );
 
     printf(
         "Inactive memory: %.2f GB\n",
-        bytes_to_gb(memory_info->inactive)
+        bytes_to_gb(
+            memory_info->inactive
+        )
     );
 
     printf(
-        "Wired memory: %.2f GB\n",
-        bytes_to_gb(memory_info->wired)
+        "Wired memory:    %.2f GB\n",
+        bytes_to_gb(
+            memory_info->wired
+        )
     );
 
 
@@ -514,13 +604,13 @@ void print_monitor(
     }
 
     printf(
-        "Memory Usage: %.2f%%\n\n",
+        "Memory Usage:    %.2f%%\n\n",
         memory_usage
     );
 
 
     /*
-     * Process list.
+     * TOP 10 BY CPU
      */
     printf(
         "TOP 10 PROCESSES BY CPU\n"
@@ -530,12 +620,15 @@ void print_monitor(
         "============================================\n"
     );
 
-    int processes_to_print = process_count;
+
+    int processes_to_print =
+        process_count;
 
     if (processes_to_print > 10)
     {
         processes_to_print = 10;
     }
+
 
     for (
         int i = 0;
@@ -559,6 +652,84 @@ void print_monitor(
         );
     }
 
+
+    /*
+     * Create a separate copy of the
+     * process list for memory sorting.
+     */
+    Process memory_sorted[MAX_PROCESSES];
+
+    for (
+        int i = 0;
+        i < process_count;
+        i++
+    )
+    {
+        memory_sorted[i] =
+            processes[i];
+    }
+
+
+    /*
+     * Sort the copy by memory usage.
+     */
+    qsort(
+        memory_sorted,
+        process_count,
+        sizeof(Process),
+        compare_processes_by_memory
+    );
+
+
+    printf("\n");
+
+
+    /*
+     * TOP 10 BY MEMORY
+     */
+    printf(
+        "TOP 10 PROCESSES BY MEMORY\n"
+    );
+
+    printf(
+        "============================================\n"
+    );
+
+
+    int memory_processes_to_print =
+        process_count;
+
+    if (
+        memory_processes_to_print > 10
+    )
+    {
+        memory_processes_to_print = 10;
+    }
+
+
+    for (
+        int i = 0;
+        i < memory_processes_to_print;
+        i++
+    )
+    {
+        printf(
+            "%-6d %-30s Memory: %8.2f MB "
+            "CPU: %6.2f%%\n",
+
+            memory_sorted[i].pid,
+
+            memory_sorted[i].name,
+
+            bytes_to_mb(
+                memory_sorted[i].memory
+            ),
+
+            memory_sorted[i].cpu_percent
+        );
+    }
+
+
     printf("\n");
     printf("Press Ctrl+C to stop.\n");
 
@@ -576,7 +747,8 @@ int main(void)
      */
     int cpu_count;
 
-    size_t size = sizeof(cpu_count);
+    size_t size =
+        sizeof(cpu_count);
 
     if (
         sysctlbyname(
@@ -594,22 +766,26 @@ int main(void)
 
 
     /*
-     * Continuously update the monitor.
+     * Continuously update monitor.
      */
     while (1)
     {
         /*
-         * Take first CPU snapshot.
+         * First CPU snapshot.
          */
         host_cpu_load_info_data_t first_cpu;
 
-        get_cpu_ticks(&first_cpu);
+        get_cpu_ticks(
+            &first_cpu
+        );
 
 
         /*
-         * Take first process snapshot.
+         * First process snapshot.
          */
-        Process first_snapshot[MAX_PROCESSES];
+        Process first_snapshot[
+            MAX_PROCESSES
+        ];
 
         int first_count =
             get_process_snapshot(
@@ -624,21 +800,25 @@ int main(void)
 
 
         /*
-         * Wait for the sampling interval.
+         * Wait one second.
          */
-        sleep(SAMPLE_INTERVAL);
+        sleep(
+            SAMPLE_INTERVAL
+        );
 
 
         /*
-         * Take second CPU snapshot.
+         * Second CPU snapshot.
          */
         host_cpu_load_info_data_t second_cpu;
 
-        get_cpu_ticks(&second_cpu);
+        get_cpu_ticks(
+            &second_cpu
+        );
 
 
         /*
-         * Calculate total CPU usage.
+         * Calculate overall CPU usage.
          */
         double cpu_usage =
             calculate_cpu_usage(
@@ -648,9 +828,11 @@ int main(void)
 
 
         /*
-         * Take second process snapshot.
+         * Second process snapshot.
          */
-        Process second_snapshot[MAX_PROCESSES];
+        Process second_snapshot[
+            MAX_PROCESSES
+        ];
 
         int second_count =
             get_process_snapshot(
@@ -665,7 +847,8 @@ int main(void)
 
 
         /*
-         * Calculate process CPU percentages.
+         * Calculate CPU percentage
+         * for every process.
          */
         for (
             int i = 0;
@@ -680,9 +863,10 @@ int main(void)
                     second_snapshot[i].pid
                 );
 
+
             /*
-             * New process or process that
-             * disappeared from the first snapshot.
+             * Process did not exist
+             * in the first snapshot.
              */
             if (first_index == -1)
             {
@@ -690,44 +874,35 @@ int main(void)
             }
 
 
-            /*
-             * CPU time counters are nanoseconds.
-             */
             uint64_t first_cpu_time =
-                first_snapshot[first_index].cpu_time;
+                first_snapshot[
+                    first_index
+                ].cpu_time;
 
             uint64_t second_cpu_time =
-                second_snapshot[i].cpu_time;
+                second_snapshot[
+                    i
+                ].cpu_time;
 
 
-            /*
-             * Calculate CPU time consumed.
-             */
             uint64_t cpu_time_delta =
                 second_cpu_time -
                 first_cpu_time;
 
 
             /*
-             * Convert nanoseconds to seconds.
+             * CPU counters are nanoseconds.
              */
             double process_cpu_seconds =
                 (double)cpu_time_delta /
                 1000000000.0;
 
 
-            /*
-             * Calculate percentage.
-             *
-             * 100% = one completely utilized CPU core.
-             *
-             * A multithreaded process can therefore
-             * exceed 100%.
-             */
             double cpu_percent =
                 (process_cpu_seconds /
                  (double)SAMPLE_INTERVAL) *
                 100.0;
+
 
             second_snapshot[i].cpu_percent =
                 cpu_percent;
@@ -735,7 +910,8 @@ int main(void)
 
 
         /*
-         * Sort by CPU usage.
+         * Sort main process array
+         * by CPU.
          */
         qsort(
             second_snapshot,
@@ -761,7 +937,7 @@ int main(void)
 
 
         /*
-         * Display everything.
+         * Display monitor.
          */
         print_monitor(
             cpu_count,
@@ -771,6 +947,7 @@ int main(void)
             second_count
         );
     }
+
 
     return 0;
 }
