@@ -3,6 +3,7 @@
 #include <sys/sysctl.h>
 #include <mach/mach.h> //give us access to Mach APIs.
 #include <mach/mach_host.h> //give us access to Mach APIs.
+#include <mach/mach_time.h>
 #include <unistd.h> //gives us sleep()
 #include <stdlib.h>
 #include <stdint.h>
@@ -10,7 +11,8 @@
 #define MAX_PROCESSES 4096 //reasonable maximum size for our PID array.
 //enough space to store information of abt up to 4096 process
 //having more than 4096 simultaneously running processes is unlikely
-
+#define SAMPLE_INTERVAL 1.0
+//can use mach timebase to convert the process CPU time units into nanoseconds
 
 void get_cpu_ticks(host_cpu_load_info_data_t *cpu_info)
 {
@@ -23,7 +25,6 @@ void get_cpu_ticks(host_cpu_load_info_data_t *cpu_info)
         (host_info64_t)cpu_info, //The function expects a particular pointer type. our structure's pointer is different, but compatible. so we explicitly convert it to the type the function expects
         &count
     );
-
 
 
     if (result != KERN_SUCCESS)
@@ -43,7 +44,8 @@ double get_cpu_usage(void)
 
     get_cpu_ticks(&first);
 
-    sleep(1);
+    sleep(1); //not a good idea to hardcode this
+    //may give 1.003 or 1.012 etc, not a sharp and precise 1 second
 
     get_cpu_ticks(&second);
 
@@ -95,6 +97,22 @@ double bytes_to_mb(uint64_t bytes) //converts bytes to megabytes - divide by 10^
     return (double)bytes / (1024.0 * 1024.0);
 }
 
+double mach_absolute_time_to_seconds(uint64_t time)
+{
+    mach_timebase_info_data_t timebase;
+    //this asks macOS for the conversion ratio
+    //from CPU time to seconds to nanoseconds
+
+    mach_timebase_info(&timebase);
+
+    double nanoseconds =
+        (double)time *
+        (double)timebase.numer /
+        (double)timebase.denom;
+
+    return (double)nanoseconds / 1000000000.0;
+    //converts nanoseconds into seconds
+}
 
 typedef struct
 {
@@ -177,6 +195,7 @@ int get_process_snapshot(Process processes[], int max_processes)
         //this is cummulative cpu time
         //pti_total_user and pti_total_system are CPU time counters
         //but the counters are not expressed directly in seconds
+        //units of pti are not the same as CPU seconds
 
         process.cpu_percent = 0.0;
 
@@ -202,6 +221,24 @@ int find_process(Process processes[], int process_count, pid_t pid)
     return -1; //if the process pid doesnt exist
 }
 
+int compare_processes_by_cpu(const void *a, const void *b)
+{
+    const Process *process_a = (const Process *)a;
+    const Process *process_b = (const Process *)b;
+
+    if (process_a->cpu_percent < process_b->cpu_percent)
+    {
+        return 1;
+    }
+
+    if (process_a->cpu_percent > process_b->cpu_percent)
+    {
+        return -1;
+    }
+
+    return 0;
+}
+//qsort() needs a function that tells it which of the 2 elements should come first
 int main(void)
 {
     int cpu_count;
@@ -275,6 +312,8 @@ int main(void)
 
     Process first_snapshot[MAX_PROCESSES];
 
+    uint64_t start_time = mach_absolute_time();
+
     int first_count = get_process_snapshot(
         first_snapshot,
         MAX_PROCESSES
@@ -298,6 +337,10 @@ int main(void)
     {
         return 1;
     }
+
+    uint64_t end_time = mach_absolute_time();
+
+    double elapsed_seconds = mach_absolute_time_to_seconds(end_time - start_time);
 
     //have to match processes by PID
     //cant calculate a process' CPU usage if we cant find a match (no earlier/later measurement)
@@ -324,28 +367,44 @@ int main(void)
         uint64_t cpu_time_delta = second_cpu_time - first_cpu_time;
         //calculates CPU time consumed during the interval
 
-        printf(
-            "%d  %-30s CPU time delta: %llu\n",
-            second_snapshot[i].pid,
-            second_snapshot[i].name,
-            cpu_time_delta
-        );
+        //calculate the % of total CPU capacity used by this process during the sample interval
+
+        //the machine has multiple logical CPUs, so the total CPU capacity is
+        //number of logical CPUs * sample interval
+
+        double process_cpu_seconds = mach_absolute_time_to_seconds(cpu_time_delta);
+        //store the calculated CPU % in our process structure
+        
+        double cpu_percent = (process_cpu_seconds / elapsed_seconds)*100.0;
+        //a process can use more than 100% CPU when it has multiple threads running on multiple CPU cores at the same time
+        //store the calculated CPU % in our process structure
+    
+
+        second_snapshot[i].cpu_percent = cpu_percent;
      
     }
-    /*
-    printf("PROCESSES\n");
-    printf("============================================\n");
 
-    for (int i = 0; i < process_count; i++)
-{
-    printf(
-        "%d  %-30s CPU time: %llu  Memory: %.2f MB\n",
-        processes[i].pid,
-        processes[i].name,
-        processes[i].cpu_time,
-        bytes_to_mb(processes[i].memory)
+    qsort(
+        second_snapshot,
+        second_count,
+        sizeof(Process),
+        compare_processes_by_cpu
     );
-} */
+
+    //printing the sorted list
+    printf("\nPROCESS CPU DELTAS\n");
+    printf("======================================\n");
+
+    for (int i = 0; i < second_count; i++)
+    {
+        printf(
+            "%d  %-30s CPU: %.2f%% Memory: %.2f MB\n",
+            second_snapshot[i].pid,
+            second_snapshot[i].name,
+            second_snapshot[i].cpu_percent,
+            bytes_to_mb(second_snapshot[i].memory)
+        );
+    }
 
     return 0;
 }
