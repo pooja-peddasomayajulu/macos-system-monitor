@@ -125,6 +125,112 @@ typedef struct
 } MemoryInfo;
 
 
+int get_memory_info(MemoryInfo *memory_info)
+{
+    vm_statistics64_data_t vm_stat;
+    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+
+    mach_port_t host = mach_host_self();
+
+    kern_return_t result = host_statistics64(
+        host,
+        HOST_VM_INFO64,
+        (host_info64_t)&vm_stat,
+        &count
+    );
+
+    if (result != KERN_SUCCESS)
+    {
+        fprintf(
+            stderr,
+            "host_statistics64 for memory failed: %d\n",
+            result
+        );
+
+        return -1;
+    }
+
+    vm_size_t page_size;
+
+    result = host_page_size(
+        host,
+        &page_size
+    );
+
+    if (result != KERN_SUCCESS)
+    {
+        fprintf(
+            stderr,
+            "host_page_size failed: %d\n",
+            result
+        );
+
+        return -1;
+    }
+
+    uint64_t free_pages =
+        (uint64_t)vm_stat.free_count -
+        (uint64_t)vm_stat.speculative_count;
+
+    uint64_t active_pages =
+        (uint64_t)vm_stat.active_count;
+
+    uint64_t inactive_pages =
+        (uint64_t)vm_stat.inactive_count;
+
+    uint64_t wired_pages =
+        (uint64_t)vm_stat.wire_count;
+
+    memory_info->free =
+        free_pages * (uint64_t)page_size;
+
+    memory_info->active =
+        active_pages * (uint64_t)page_size;
+
+    memory_info->inactive =
+        inactive_pages * (uint64_t)page_size;
+
+    memory_info->wired =
+        wired_pages * (uint64_t)page_size;
+
+        /*
+     * Calculate total and used memory.
+     *
+     * Total memory comes from hw.memsize, which is the
+     * same value we already retrieved in main().
+     *
+     * For this project, we treat inactive memory as
+     * reclaimable memory, so used memory is:
+     *
+     * total - free - inactive
+     */
+
+    uint64_t total_memory;
+    size_t size = sizeof(total_memory);
+
+    if (sysctlbyname(
+            "hw.memsize",
+            &total_memory,
+            &size,
+            NULL,
+            0
+        ) == -1)
+    {
+        perror("hw.memsize");
+        return -1;
+    }
+
+    memory_info->total = total_memory;
+
+    memory_info->used =
+        memory_info->total -
+        memory_info->free -
+        memory_info->inactive;
+
+    return 0;
+
+}
+
 typedef struct
 {
     pid_t pid;
@@ -238,7 +344,28 @@ int compare_processes_by_cpu(const void *a, const void *b)
 
     return 0;
 }
+
+int compare_processes_by_memory(const void *a, const void *b)
+{
+    const Process *process_a = (const Process *)a;
+    const Process *process_b = (const Process *)b;
+
+    if (process_a->memory < process_b->memory)
+    {
+        return 1;
+    }
+
+    if (process_a->memory > process_b->memory)
+    {
+        return -1;
+    }
+
+    return 0;
+}
 //qsort() needs a function that tells it which of the 2 elements should come first
+//this comparison sorts processes from highest memory usage to lowest memory usage
+
+
 int main(void)
 {
     int cpu_count;
@@ -304,6 +431,51 @@ int main(void)
     printf(
         "Total memory using bytes_to_gb(): %.2f GB\n\n",
         total_gb
+    );
+
+        /*
+     * MEMORY STATISTICS
+     */
+
+    MemoryInfo memory_info;
+
+    if (get_memory_info(&memory_info) == -1)
+    {
+        return 1;
+    }
+
+    printf(
+        "Used memory: %.2f GB\n",
+        bytes_to_gb(memory_info.used)
+    );
+
+    printf(
+        "Free memory: %.2f GB\n",
+        bytes_to_gb(memory_info.free)
+    );
+
+    printf(
+        "Active memory: %.2f GB\n",
+        bytes_to_gb(memory_info.active)
+    );
+
+    printf(
+        "Inactive memory: %.2f GB\n",
+        bytes_to_gb(memory_info.inactive)
+    );
+
+    printf(
+        "Wired memory: %.2f GB\n\n",
+        bytes_to_gb(memory_info.wired)
+    );
+
+    double memory_usage =
+        ((double)memory_info.used /
+        (double)memory_info.total) * 100.0;
+
+    printf(
+        "Memory Usage: %.2f%%\n\n",
+        memory_usage
     );
 
     /*
@@ -392,10 +564,17 @@ int main(void)
     );
 
     //printing the sorted list
-    printf("\nPROCESS CPU DELTAS\n");
+    printf("\nTOP 10 PROCESSES BY CPU\n");
     printf("======================================\n");
 
-    for (int i = 0; i < second_count; i++)
+    int processes_to_print = second_count;
+
+    if (processes_to_print > 10)
+    {
+        processes_to_print = 10;
+    }
+
+    for (int i = 0; i < processes_to_print; i++)
     {
         printf(
             "%d  %-30s CPU: %.2f%% Memory: %.2f MB\n",
