@@ -388,201 +388,203 @@ int main(void)
     printf("Logical CPUs: %d\n\n", cpu_count);
 
 
-    /*
-     * CPU MONITOR
-     */
-
-    double cpu_usage = get_cpu_usage();
-
-    printf(
-        "CPU Usage: %.2f%%\n\n",
-        cpu_usage
-    );
-
-
-    /*
-     * TOTAL MEMORY
-     */
-
-    uint64_t total_memory;
-
-    size = sizeof(total_memory);
-
-    if (sysctlbyname(
-            "hw.memsize",
-            &total_memory,
-            &size,
-            NULL,
-            0
-        ) == -1)
+    while (1)
     {
-        perror("hw.memsize");
-        return 1; //returning 0 means success and 1 means error
-    }
+        /*
+         * CPU MONITOR
+         */
 
-    printf(
-        "Total memory: %.2f GB\n\n",
-        (double)total_memory /
-        (1024.0 * 1024.0 * 1024.0)
-    );
+        double cpu_usage = get_cpu_usage();
 
-    double total_gb = bytes_to_gb(total_memory);
+        printf(
+            "CPU Usage: %.2f%%\n\n",
+            cpu_usage
+        );
 
-    printf(
-        "Total memory using bytes_to_gb(): %.2f GB\n\n",
-        total_gb
-    );
 
         /*
-     * MEMORY STATISTICS
-     */
+         * TOTAL MEMORY
+         */
 
-    MemoryInfo memory_info;
+        uint64_t total_memory;
 
-    if (get_memory_info(&memory_info) == -1)
-    {
-        return 1;
-    }
+        size = sizeof(total_memory);
 
-    printf(
-        "Used memory: %.2f GB\n",
-        bytes_to_gb(memory_info.used)
-    );
-
-    printf(
-        "Free memory: %.2f GB\n",
-        bytes_to_gb(memory_info.free)
-    );
-
-    printf(
-        "Active memory: %.2f GB\n",
-        bytes_to_gb(memory_info.active)
-    );
-
-    printf(
-        "Inactive memory: %.2f GB\n",
-        bytes_to_gb(memory_info.inactive)
-    );
-
-    printf(
-        "Wired memory: %.2f GB\n\n",
-        bytes_to_gb(memory_info.wired)
-    );
-
-    double memory_usage =
-        ((double)memory_info.used /
-        (double)memory_info.total) * 100.0;
-
-    printf(
-        "Memory Usage: %.2f%%\n\n",
-        memory_usage
-    );
-
-    /*
-     * PROCESS LIST
-     */
-
-    Process first_snapshot[MAX_PROCESSES];
-
-    uint64_t start_time = mach_absolute_time();
-
-    int first_count = get_process_snapshot(
-        first_snapshot,
-        MAX_PROCESSES
-    );
-
-    if (first_count == -1)
-    {
-        return 1;
-    }
-
-    sleep(1);
-
-    Process second_snapshot[MAX_PROCESSES];
-
-    int second_count = get_process_snapshot(
-        second_snapshot,
-        MAX_PROCESSES
-    );
-
-    if (second_count==-1)
-    {
-        return 1;
-    }
-
-    uint64_t end_time = mach_absolute_time();
-
-    double elapsed_seconds = mach_absolute_time_to_seconds(end_time - start_time);
-
-    //have to match processes by PID
-    //cant calculate a process' CPU usage if we cant find a match (no earlier/later measurement)
-
-    printf("\nPROCESS CPU DELTAS\n");
-    printf("======================================\n");
-
-    for(int i = 0; i < second_count; i++)
-    //for every process in the 2nd snapshot
-    {
-        int first_index = find_process(first_snapshot, first_count, second_snapshot[i].pid);
-        //we find the same PID in the first snapshot
-        if (first_index == -1)
+        if (sysctlbyname(
+                "hw.memsize",
+                &total_memory,
+                &size,
+                NULL,
+                0
+            ) == -1)
         {
-            continue;
+            perror("hw.memsize");
+            return 1; //returning 0 means success and 1 means error
         }
 
-        uint64_t first_cpu_time = first_snapshot[first_index].cpu_time;
-        //get the CPU time from one second ago
-
-        uint64_t second_cpu_time = second_snapshot[i].cpu_time;
-        //gets the current CPU time
-
-        uint64_t cpu_time_delta = second_cpu_time - first_cpu_time;
-        //calculates CPU time consumed during the interval
-
-        //calculate the % of total CPU capacity used by this process during the sample interval
-
-        //the machine has multiple logical CPUs, so the total CPU capacity is
-        //number of logical CPUs * sample interval
-
-        double process_cpu_seconds = mach_absolute_time_to_seconds(cpu_time_delta);
-        //store the calculated CPU % in our process structure
-        
-        double cpu_percent = (process_cpu_seconds / elapsed_seconds)*100.0;
-        //a process can use more than 100% CPU when it has multiple threads running on multiple CPU cores at the same time
-        //store the calculated CPU % in our process structure
-    
-
-        second_snapshot[i].cpu_percent = cpu_percent;
-     
-    }
-
-    qsort(
-        second_snapshot,
-        second_count,
-        sizeof(Process),
-        compare_processes_by_cpu
-    );
-
-    //printing the sorted list
-    printf("\nTOP 10 PROCESSES BY CPU\n");
-    printf("======================================\n");
-
-    int processes_to_print = second_count;
-
-    if (processes_to_print > 10)
-    {
-        processes_to_print = 10;
-    }
-
-    for (int i = 0; i < processes_to_print; i++)
-    {
         printf(
-            "%d  %-30s CPU: %.2f%% Memory: %.2f MB\n",
-            second_snapshot[i].pid,
-            second_snapshot[i].name,
-            second_snapshot[i].cpu_percent,
-            bytes_to_mb(second_snapshot[i].memory)
+            "Total memory: %.2f GB\n\n",
+            (double)total_memory /
+            (1024.0 * 1024.0 * 1024.0)
         );
+
+        double total_gb = bytes_to_gb(total_memory);
+
+        printf(
+            "Total memory using bytes_to_gb(): %.2f GB\n\n",
+            total_gb
+        );
+
+        /*
+         * MEMORY STATISTICS
+         */
+
+        MemoryInfo memory_info;
+
+        if (get_memory_info(&memory_info) == -1)
+        {
+            return 1;
+        }
+
+        printf(
+            "Used memory: %.2f GB\n",
+            bytes_to_gb(memory_info.used)
+        );
+
+        printf(
+            "Free memory: %.2f GB\n",
+            bytes_to_gb(memory_info.free)
+        );
+
+        printf(
+            "Active memory: %.2f GB\n",
+            bytes_to_gb(memory_info.active)
+        );
+
+        printf(
+            "Inactive memory: %.2f GB\n",
+            bytes_to_gb(memory_info.inactive)
+        );
+
+        printf(
+            "Wired memory: %.2f GB\n\n",
+            bytes_to_gb(memory_info.wired)
+        );
+
+        double memory_usage =
+            ((double)memory_info.used /
+            (double)memory_info.total) * 100.0;
+
+        printf(
+            "Memory Usage: %.2f%%\n\n",
+            memory_usage
+        );
+
+        /*
+         * PROCESS LIST
+         */
+
+        Process first_snapshot[MAX_PROCESSES];
+
+        uint64_t start_time = mach_absolute_time();
+
+        int first_count = get_process_snapshot(
+            first_snapshot,
+            MAX_PROCESSES
+        );
+
+        if (first_count == -1)
+        {
+            return 1;
+        }
+
+        sleep(1);
+
+        Process second_snapshot[MAX_PROCESSES];
+
+        int second_count = get_process_snapshot(
+            second_snapshot,
+            MAX_PROCESSES
+        );
+
+        if (second_count==-1)
+        {
+            return 1;
+        }
+
+        uint64_t end_time = mach_absolute_time();
+
+        double elapsed_seconds = mach_absolute_time_to_seconds(end_time - start_time);
+
+        //have to match processes by PID
+        //cant calculate a process' CPU usage if we cant find a match (no earlier/later measurement)
+
+        for(int i = 0; i < second_count; i++)
+        //for every process in the 2nd snapshot
+        {
+            int first_index = find_process(first_snapshot, first_count, second_snapshot[i].pid);
+            //we find the same PID in the first snapshot
+            if (first_index == -1)
+            {
+                continue;
+            }
+
+            uint64_t first_cpu_time = first_snapshot[first_index].cpu_time;
+            //get the CPU time from one second ago
+
+            uint64_t second_cpu_time = second_snapshot[i].cpu_time;
+            //gets the current CPU time
+
+            uint64_t cpu_time_delta = second_cpu_time - first_cpu_time;
+            //calculates CPU time consumed during the interval
+
+            //calculate the % of total CPU capacity used by this process during the sample interval
+
+            //the machine has multiple logical CPUs, so the total CPU capacity is
+            //number of logical CPUs * sample interval
+
+            double process_cpu_seconds = mach_absolute_time_to_seconds(cpu_time_delta);
+            //store the calculated CPU % in our process structure
+            
+            double cpu_percent = (process_cpu_seconds / elapsed_seconds)*100.0;
+            //a process can use more than 100% CPU when it has multiple threads running on multiple CPU cores at the same time
+            //store the calculated CPU % in our process structure
+        
+
+            second_snapshot[i].cpu_percent = cpu_percent;
+        
+        }
+
+        qsort(
+            second_snapshot,
+            second_count,
+            sizeof(Process),
+            compare_processes_by_cpu
+        );
+
+        //printing the sorted list
+        printf("\nTOP 10 PROCESSES BY CPU\n");
+        printf("======================================\n");
+
+        int processes_to_print = second_count;
+
+        if (processes_to_print > 10)
+        {
+            processes_to_print = 10;
+        }
+
+        for (int i = 0; i < processes_to_print; i++)
+        {
+            printf(
+                "%d  %-30s CPU: %.2f%% Memory: %.2f MB\n",
+                second_snapshot[i].pid,
+                second_snapshot[i].name,
+                second_snapshot[i].cpu_percent,
+                bytes_to_mb(second_snapshot[i].memory)
+            );
+        }
+
+        printf("\n");
     }
 
     return 0;
