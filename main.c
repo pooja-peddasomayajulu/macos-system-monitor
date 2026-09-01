@@ -1,16 +1,35 @@
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/sysctl.h>
-#include <mach/mach.h>
-#include <mach/mach_host.h>
+#include <sys/mount.h>
+#include <mach/mach.h> //give us access to Mach APIs.
+#include <mach/mach_host.h> //give us access to Mach APIs.
 #include <mach/mach_time.h>
-#include <unistd.h>
+#include <unistd.h> //gives us sleep() and usleep()
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
+#include <getopt.h>
+#include <time.h>
+#include <sys/time.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <errno.h>
 #include <libproc.h>
+#include <signal.h>
 
-#define MAX_PROCESSES 4096
-#define SAMPLE_INTERVAL 1
+
+#define MAX_PROCESSES 4096 //reasonable maximum size for our PID array.
+//enough space to store information of abt up to 4096 process
+//having more than 4096 simultaneously running processes is unlikely
+
+#define DEFAULT_SAMPLE_INTERVAL 1.0
+//default amount of time between monitor updates
+
+#define DEFAULT_TOP_PROCESSES 10
+//default number of processes displayed in each process table
+
+//can use mach timebase to convert the process CPU time units into nanoseconds
 
 
 /*
@@ -19,13 +38,13 @@
 void get_cpu_ticks(host_cpu_load_info_data_t *cpu_info)
 {
     mach_msg_type_number_t count =
-        HOST_CPU_LOAD_INFO_COUNT;
+        HOST_CPU_LOAD_INFO_COUNT; //tells the Mach API how much CPU information we're working with.
 
     kern_return_t result =
         host_statistics64(
-            mach_host_self(),
+            mach_host_self(), //Mach port/handle referring to the current host.
             HOST_CPU_LOAD_INFO,
-            (host_info64_t)cpu_info,
+            (host_info64_t)cpu_info, //The function expects a particular pointer type. our structure's pointer is different, but compatible. so we explicitly convert it to the type the function expects
             &count
         );
 
@@ -83,13 +102,16 @@ double calculate_cpu_usage(
     return
         ((double)busy_delta /
          (double)total_delta) * 100.0;
+
+    //we use double as busy_delta/total_delta are both integers. integer division can produce 0 instead of 0.6
+    //double treats it as a floating point number
 }
 
 
 /*
  * Convert bytes to gigabytes.
  */
-double bytes_to_gb(uint64_t bytes)
+double bytes_to_gb(uint64_t bytes) //converts bytes to gigabytes - divide by 10^9
 {
     return
         (double)bytes /
@@ -100,7 +122,7 @@ double bytes_to_gb(uint64_t bytes)
 /*
  * Convert bytes to megabytes.
  */
-double bytes_to_mb(uint64_t bytes)
+double bytes_to_mb(uint64_t bytes) //converts bytes to megabytes - divide by 10^6
 {
     return
         (double)bytes /
@@ -214,6 +236,19 @@ int get_memory_info(MemoryInfo *memory_info)
 
 
     /*
+     * Calculate total and used memory.
+     *
+     * Total memory comes from hw.memsize, which is the
+     * same value we already retrieved in main().
+     *
+     * For this project, we treat inactive memory as
+     * reclaimable memory, so used memory is:
+     *
+     * total - free - inactive
+     */
+
+
+    /*
      * Get total physical memory.
      */
     uint64_t total_memory;
@@ -252,6 +287,359 @@ int get_memory_info(MemoryInfo *memory_info)
 
 
 /*
+ * Disk information.
+ *
+ * Disk statistics are collected for
+ * the root filesystem "/".
+ */
+typedef struct
+{
+    uint64_t total;
+    uint64_t used;
+    uint64_t free;
+
+} DiskInfo;
+
+
+/*
+ * Get current disk statistics.
+ *
+ * statfs() asks macOS for information about
+ * the filesystem containing the specified path.
+ *
+ * We use "/" so the monitor reports the
+ * main filesystem.
+ */
+int get_disk_info(DiskInfo *disk_info)
+{
+    struct statfs filesystem_info;
+
+    if (
+        statfs(
+            "/",
+            &filesystem_info
+        ) == -1
+    )
+    {
+        perror("statfs");
+        return -1;
+    }
+
+
+    /*
+     * Calculate total disk space.
+     */
+    uint64_t block_size =
+        (uint64_t)filesystem_info.f_bsize;
+
+    uint64_t total_blocks =
+        (uint64_t)filesystem_info.f_blocks;
+
+    uint64_t free_blocks =
+        (uint64_t)filesystem_info.f_bavail;
+
+
+    disk_info->total =
+        total_blocks *
+        block_size;
+
+    disk_info->free =
+        free_blocks *
+        block_size;
+
+
+    /*
+     * Used disk space is:
+     *
+     * total - free
+     */
+    if (disk_info->free <= disk_info->total)
+    {
+        disk_info->used =
+            disk_info->total -
+            disk_info->free;
+    }
+    else
+    {
+        disk_info->used = 0;
+    }
+
+    return 0;
+}
+
+
+/*
+ * Uptime information.
+ */
+typedef struct
+{
+    uint64_t seconds;
+
+} UptimeInfo;
+
+
+/*
+ * Get system uptime.
+ *
+ * macOS exposes the boot time through
+ * the kern.boottime sysctl value.
+ */
+int get_uptime(UptimeInfo *uptime_info)
+{
+    struct timeval boot_time;
+
+    size_t size =
+        sizeof(boot_time);
+
+    if (
+        sysctlbyname(
+            "kern.boottime",
+            &boot_time,
+            &size,
+            NULL,
+            0
+        ) == -1
+    )
+    {
+        perror("kern.boottime");
+        return -1;
+    }
+
+
+    /*
+     * Get the current wall-clock time.
+     */
+    struct timeval current_time;
+
+    if (
+        gettimeofday(
+            &current_time,
+            NULL
+        ) == -1
+    )
+    {
+        perror("gettimeofday");
+        return -1;
+    }
+
+
+    /*
+     * Calculate the difference between
+     * current time and boot time.
+     */
+    if (
+        current_time.tv_sec >=
+        boot_time.tv_sec
+    )
+    {
+        uptime_info->seconds =
+            (uint64_t)(
+                current_time.tv_sec -
+                boot_time.tv_sec
+            );
+    }
+    else
+    {
+        uptime_info->seconds = 0;
+    }
+
+    return 0;
+}
+
+
+/*
+ * Print uptime in a human-readable format.
+ */
+void print_uptime(
+    uint64_t seconds
+)
+{
+    uint64_t days =
+        seconds / 86400;
+
+    seconds %= 86400;
+
+    uint64_t hours =
+        seconds / 3600;
+
+    seconds %= 3600;
+
+    uint64_t minutes =
+        seconds / 60;
+
+    seconds %= 60;
+
+
+    printf(
+        "Uptime: %llu days, %llu:%02llu:%02llu\n",
+        (unsigned long long)days,
+        (unsigned long long)hours,
+        (unsigned long long)minutes,
+        (unsigned long long)seconds
+    );
+}
+
+
+/*
+ * Load average information.
+ */
+typedef struct
+{
+    double one_minute;
+    double five_minutes;
+    double fifteen_minutes;
+
+} LoadAverage;
+
+
+/*
+ * Get system load averages.
+ *
+ * getloadavg() returns the number of
+ * runnable processes averaged over
+ * 1, 5, and 15 minutes.
+ */
+int get_load_average(
+    LoadAverage *load_average
+)
+{
+    double loads[3];
+
+    int result =
+        getloadavg(
+            loads,
+            3
+        );
+
+    if (result != 3)
+    {
+        fprintf(
+            stderr,
+            "getloadavg failed\n"
+        );
+
+        return -1;
+    }
+
+
+    load_average->one_minute =
+        loads[0];
+
+    load_average->five_minutes =
+        loads[1];
+
+    load_average->fifteen_minutes =
+        loads[2];
+
+    return 0;
+}
+
+
+/*
+ * Network information.
+ */
+typedef struct
+{
+    uint64_t received_bytes;
+    uint64_t transmitted_bytes;
+
+} NetworkInfo;
+
+
+/*
+ * Get network statistics.
+ *
+ * We use getifaddrs() to examine each
+ * network interface.
+ *
+ * ifi_ibytes = bytes received
+ * ifi_obytes = bytes transmitted
+ */
+int get_network_info(
+    NetworkInfo *network_info
+)
+{
+    network_info->received_bytes = 0;
+    network_info->transmitted_bytes = 0;
+
+
+    struct ifaddrs *interfaces = NULL;
+
+    if (
+        getifaddrs(
+            &interfaces
+        ) == -1
+    )
+    {
+        perror("getifaddrs");
+        return -1;
+    }
+
+
+    /*
+     * Walk through every network interface.
+     */
+    for (
+        struct ifaddrs *interface =
+            interfaces;
+
+        interface != NULL;
+
+        interface =
+            interface->ifa_next
+    )
+    {
+        if (
+            interface->ifa_data == NULL
+        )
+        {
+            continue;
+        }
+
+
+        /*
+         * We only want link-layer
+         * interface statistics.
+         */
+        if (
+            interface->ifa_addr == NULL
+        )
+        {
+            continue;
+        }
+
+
+        if (
+            interface->ifa_addr->sa_family !=
+            AF_LINK
+        )
+        {
+            continue;
+        }
+
+
+        struct if_data *interface_data =
+            (struct if_data *)
+            interface->ifa_data;
+
+
+        network_info->received_bytes +=
+            (uint64_t)interface_data->ifi_ibytes;
+
+        network_info->transmitted_bytes +=
+            (uint64_t)interface_data->ifi_obytes;
+    }
+
+
+    freeifaddrs(
+        interfaces
+    );
+
+    return 0;
+}
+
+
+/*
  * Information about a process.
  */
 typedef struct
@@ -284,6 +672,8 @@ int get_process_snapshot(
             pids,
             sizeof(pids)
         );
+
+    //retrieves list of all active pids
 
     if (count == -1)
     {
@@ -333,6 +723,8 @@ int get_process_snapshot(
         }
 
 
+        //get information about this process
+
         /*
          * Get process information.
          */
@@ -347,11 +739,18 @@ int get_process_snapshot(
                 sizeof(task_info)
             );
 
+        //the process may have exited between getting the PID list and asking for its information
+        //it is also possible that we dont have access to it
+        //if we cant get the information, skip the process
+
         /*
          * Process may have exited or
          * information may be unavailable.
          */
-        if (result != sizeof(task_info))
+        if (
+            result !=
+            sizeof(task_info)
+        )
         {
             continue;
         }
@@ -361,6 +760,7 @@ int get_process_snapshot(
 
         process.pid =
             pids[i];
+
 
         snprintf(
             process.name,
@@ -387,6 +787,12 @@ int get_process_snapshot(
             task_info.pti_total_user +
             task_info.pti_total_system;
 
+        //this is cummulative cpu time
+        //pti_total_user and pti_total_system are CPU time counters
+        //but the counters are not expressed directly in seconds
+        //units of pti are not the same as CPU seconds
+
+
         process.cpu_percent =
             0.0;
 
@@ -404,6 +810,7 @@ int get_process_snapshot(
 /*
  * Find a process by PID.
  */
+//this function tells us where is PID X in this process array
 int find_process(
     Process processes[],
     int process_count,
@@ -421,11 +828,11 @@ int find_process(
             pid
         )
         {
-            return i;
+            return i; //return its array position
         }
     }
 
-    return -1;
+    return -1; //if the process pid doesnt exist
 }
 
 
@@ -498,24 +905,105 @@ int compare_processes_by_memory(
     return 0;
 }
 
+//qsort() needs a function that tells it which of the 2 elements should come first
+//this comparison sorts processes from highest memory usage to lowest memory usage
+
+
+/*
+ * Print a simple percentage bar.
+ *
+ * This makes the monitor easier to read
+ * than showing percentages alone.
+ */
+void print_usage_bar(
+    double percentage,
+    int width
+)
+{
+    if (percentage < 0.0)
+    {
+        percentage = 0.0;
+    }
+
+    if (percentage > 100.0)
+    {
+        percentage = 100.0;
+    }
+
+
+    int filled =
+        (int)(
+            (percentage / 100.0) *
+            width
+        );
+
+
+    printf("[");
+
+    for (
+        int i = 0;
+        i < width;
+        i++
+    )
+    {
+        if (i < filled)
+        {
+            printf("#");
+        }
+        else
+        {
+            printf(" ");
+        }
+    }
+
+    printf("]");
+}
 
 /*
  * Print the monitor screen.
+ *
+ * Instead of repeatedly printing pieces of the
+ * monitor directly to the terminal, we first build
+ * the complete screen in memory.
+ *
+ * This reduces visible flickering because the terminal
+ * receives the monitor output as one completed frame.
  */
 void print_monitor(
     int cpu_count,
     double cpu_usage,
     MemoryInfo *memory_info,
+    DiskInfo *disk_info,
+    UptimeInfo *uptime_info,
+    LoadAverage *load_average,
+    NetworkInfo *network_info,
     Process processes[],
-    int process_count
+    int process_count,
+    int top_processes,
+    double sample_interval
 )
 {
     /*
-     * Clear screen.
+     * Move cursor to the top of the terminal.
+     *
+     * \033[H = move cursor to home position.
      */
-    printf("\033[2J");
     printf("\033[H");
 
+    /*
+     * Clear everything below the cursor.
+     *
+     * This removes the previous monitor frame.
+     */
+    printf("\033[J");
+
+    /*
+     * Start building the complete monitor frame.
+     *
+     * The monitor is still printed section by section,
+     * but the terminal output is flushed only after the
+     * complete frame has been generated.
+     */
 
     printf(
         "============================================\n"
@@ -534,13 +1022,30 @@ void print_monitor(
      * CPU information.
      */
     printf(
+        "CPU\n"
+    );
+
+    printf(
+        "--------------------------------------------\n"
+    );
+
+    printf(
         "Logical CPUs: %d\n",
         cpu_count
     );
 
     printf(
-        "CPU Usage:    %.2f%%\n\n",
+        "CPU Usage:    %6.2f%% ",
         cpu_usage
+    );
+
+    print_usage_bar(
+        cpu_usage,
+        25
+    );
+
+    printf(
+        "\n\n"
     );
 
 
@@ -548,42 +1053,50 @@ void print_monitor(
      * Memory information.
      */
     printf(
-        "Total memory:    %.2f GB\n",
+        "MEMORY\n"
+    );
+
+    printf(
+        "--------------------------------------------\n"
+    );
+
+    printf(
+        "Total memory:    %8.2f GB\n",
         bytes_to_gb(
             memory_info->total
         )
     );
 
     printf(
-        "Used memory:     %.2f GB\n",
+        "Used memory:     %8.2f GB\n",
         bytes_to_gb(
             memory_info->used
         )
     );
 
     printf(
-        "Free memory:     %.2f GB\n",
+        "Free memory:     %8.2f GB\n",
         bytes_to_gb(
             memory_info->free
         )
     );
 
     printf(
-        "Active memory:   %.2f GB\n",
+        "Active memory:   %8.2f GB\n",
         bytes_to_gb(
             memory_info->active
         )
     );
 
     printf(
-        "Inactive memory: %.2f GB\n",
+        "Inactive memory: %8.2f GB\n",
         bytes_to_gb(
             memory_info->inactive
         )
     );
 
     printf(
-        "Wired memory:    %.2f GB\n",
+        "Wired memory:    %8.2f GB\n",
         bytes_to_gb(
             memory_info->wired
         )
@@ -593,27 +1106,154 @@ void print_monitor(
     /*
      * Memory percentage.
      */
-    double memory_usage = 0.0;
+    double memory_usage =
+        0.0;
 
-    if (memory_info->total > 0)
+    if (
+        memory_info->total > 0
+    )
     {
         memory_usage =
-            ((double)memory_info->used /
-             (double)memory_info->total) *
+            (
+                (double)memory_info->used /
+                (double)memory_info->total
+            ) *
             100.0;
     }
 
     printf(
-        "Memory Usage:    %.2f%%\n\n",
+        "Memory Usage:    %6.2f%% ",
         memory_usage
+    );
+
+    print_usage_bar(
+        memory_usage,
+        25
+    );
+
+    printf(
+        "\n\n"
     );
 
 
     /*
-     * TOP 10 BY CPU
+     * Disk information.
      */
     printf(
-        "TOP 10 PROCESSES BY CPU\n"
+        "DISK\n"
+    );
+
+    printf(
+        "--------------------------------------------\n"
+    );
+
+    printf(
+        "Total disk:      %8.2f GB\n",
+        bytes_to_gb(
+            disk_info->total
+        )
+    );
+
+    printf(
+        "Used disk:       %8.2f GB\n",
+        bytes_to_gb(
+            disk_info->used
+        )
+    );
+
+    printf(
+        "Free disk:       %8.2f GB\n",
+        bytes_to_gb(
+            disk_info->free
+        )
+    );
+
+
+    double disk_usage =
+        0.0;
+
+    if (
+        disk_info->total > 0
+    )
+    {
+        disk_usage =
+            (
+                (double)disk_info->used /
+                (double)disk_info->total
+            ) *
+            100.0;
+    }
+
+    printf(
+        "Disk Usage:      %6.2f%% ",
+        disk_usage
+    );
+
+    print_usage_bar(
+        disk_usage,
+        25
+    );
+
+    printf(
+        "\n\n"
+    );
+
+
+    /*
+     * System information.
+     */
+    printf(
+        "SYSTEM\n"
+    );
+
+    printf(
+        "--------------------------------------------\n"
+    );
+
+    print_uptime(
+        uptime_info->seconds
+    );
+
+    printf(
+        "Load average:    %.2f  %.2f  %.2f\n\n",
+        load_average->one_minute,
+        load_average->five_minutes,
+        load_average->fifteen_minutes
+    );
+
+
+    /*
+     * Network information.
+     */
+    printf(
+        "NETWORK\n"
+    );
+
+    printf(
+        "--------------------------------------------\n"
+    );
+
+    printf(
+        "Received:        %10.2f MB\n",
+        bytes_to_mb(
+            network_info->received_bytes
+        )
+    );
+
+    printf(
+        "Transmitted:     %10.2f MB\n\n",
+        bytes_to_mb(
+            network_info->transmitted_bytes
+        )
+    );
+
+
+    /*
+     * TOP processes by CPU.
+     */
+    printf(
+        "TOP %d PROCESSES BY CPU\n",
+        top_processes
     );
 
     printf(
@@ -624,9 +1264,13 @@ void print_monitor(
     int processes_to_print =
         process_count;
 
-    if (processes_to_print > 10)
+    if (
+        processes_to_print >
+        top_processes
+    )
     {
-        processes_to_print = 10;
+        processes_to_print =
+            top_processes;
     }
 
 
@@ -657,7 +1301,10 @@ void print_monitor(
      * Create a separate copy of the
      * process list for memory sorting.
      */
-    Process memory_sorted[MAX_PROCESSES];
+    Process memory_sorted[
+        MAX_PROCESSES
+    ];
+
 
     for (
         int i = 0;
@@ -681,14 +1328,17 @@ void print_monitor(
     );
 
 
-    printf("\n");
+    printf(
+        "\n"
+    );
 
 
     /*
-     * TOP 10 BY MEMORY
+     * TOP processes by memory.
      */
     printf(
-        "TOP 10 PROCESSES BY MEMORY\n"
+        "TOP %d PROCESSES BY MEMORY\n",
+        top_processes
     );
 
     printf(
@@ -700,10 +1350,12 @@ void print_monitor(
         process_count;
 
     if (
-        memory_processes_to_print > 10
+        memory_processes_to_print >
+        top_processes
     )
     {
-        memory_processes_to_print = 10;
+        memory_processes_to_print =
+            top_processes;
     }
 
 
@@ -730,18 +1382,279 @@ void print_monitor(
     }
 
 
-    printf("\n");
-    printf("Press Ctrl+C to stop.\n");
+    printf(
+        "\n"
+    );
+
+
+    /*
+     * Display refresh configuration.
+     */
+    printf(
+        "Refresh interval: %.2f seconds\n",
+        sample_interval
+    );
+
+    printf(
+        "Press Ctrl+C to stop.\n"
+    );
+
+
+    /*
+     * Make sure everything currently buffered
+     * is sent to the terminal immediately.
+     */
+    fflush(stdout);
+}
+
+
+
+/*
+ * Print program usage instructions.
+ */
+void print_usage(
+    const char *program_name
+)
+{
+    printf(
+        "Usage: %s [options]\n\n",
+        program_name
+    );
+
+    printf(
+        "Options:\n"
+    );
+
+    printf(
+        "  -i, --interval SECONDS   Set refresh interval\n"
+    );
+
+    printf(
+        "  -t, --top NUMBER         Number of processes to show\n"
+    );
+
+    printf(
+        "  -h, --help               Show this help message\n"
+    );
+
+    printf(
+        "\nExamples:\n"
+    );
+
+    printf(
+        "  %s\n",
+        program_name
+    );
+
+    printf(
+        "  %s --interval 2\n",
+        program_name
+    );
+
+    printf(
+        "  %s --top 20\n",
+        program_name
+    );
+
+    printf(
+        "  %s --interval 2 --top 20\n",
+        program_name
+    );
+}
+
+/*
+ * Restore the terminal before exiting.
+ *
+ * We leave the alternate screen,
+ * show the cursor again,
+ * and return the terminal to its
+ * normal state.
+ */
+void restore_terminal(void)
+{
+    /*
+     * \033[?25h = show cursor
+     * \033[?1049l = leave alternate screen
+     */
+    printf(
+        "\033[?25h"
+        "\033[?1049l"
+    );
 
     fflush(stdout);
 }
 
 
 /*
+ * Handle Ctrl+C.
+ *
+ * SIGINT is generated when the user
+ * presses Ctrl+C in the terminal.
+ */
+void handle_signal(int signal_number)
+{
+    (void)signal_number;
+
+    restore_terminal();
+
+    exit(0);
+}
+
+
+/*
  * Main program.
  */
-int main(void)
+int main(
+    int argc,
+    char *argv[]
+)
 {
+    /*
+     * Configuration values.
+     */
+    double sample_interval =
+        DEFAULT_SAMPLE_INTERVAL;
+
+    int top_processes =
+        DEFAULT_TOP_PROCESSES;
+
+    /*
+    * Register Ctrl+C handler.
+    *
+    * This allows us to restore the terminal
+    * before the program exits.
+    */
+    signal(
+        SIGINT,
+        handle_signal
+    );
+
+    /*
+     * Command-line options.
+     */
+    static struct option long_options[] =
+    {
+        {
+            "interval",
+            required_argument,
+            NULL,
+            'i'
+        },
+
+        {
+            "top",
+            required_argument,
+            NULL,
+            't'
+        },
+
+        {
+            "help",
+            no_argument,
+            NULL,
+            'h'
+        },
+
+        {
+            NULL,
+            0,
+            NULL,
+            0
+        }
+    };
+
+
+    int option;
+
+    while (
+        (
+            option =
+                getopt_long(
+                    argc,
+                    argv,
+                    "i:t:h",
+                    long_options,
+                    NULL
+                )
+        ) != -1
+    )
+    {
+        switch (option)
+        {
+            case 'i':
+            {
+                sample_interval =
+                    atof(optarg);
+
+                if (
+                    sample_interval <= 0.0
+                )
+                {
+                    fprintf(
+                        stderr,
+                        "Interval must be greater than 0.\n"
+                    );
+
+                    return 1;
+                }
+
+                break;
+            }
+
+
+            case 't':
+            {
+                top_processes =
+                    atoi(optarg);
+
+                if (
+                    top_processes <= 0
+                )
+                {
+                    fprintf(
+                        stderr,
+                        "Top process count must be greater than 0.\n"
+                    );
+
+                    return 1;
+                }
+
+
+                if (
+                    top_processes >
+                    MAX_PROCESSES
+                )
+                {
+                    top_processes =
+                        MAX_PROCESSES;
+                }
+
+                break;
+            }
+
+
+            case 'h':
+            {
+                print_usage(
+                    argv[0]
+                );
+
+                return 0;
+            }
+
+
+            default:
+            {
+                print_usage(
+                    argv[0]
+                );
+
+                return 1;
+            }
+        }
+    }
+
+
     /*
      * Get number of logical CPUs.
      */
@@ -749,6 +1662,8 @@ int main(void)
 
     size_t size =
         sizeof(cpu_count);
+
+    //sysctlbyname asks macOS for number of logical CPUs
 
     if (
         sysctlbyname(
@@ -766,10 +1681,41 @@ int main(void)
 
 
     /*
+    * Start the monitor in the terminal's
+    * alternate screen.
+    *
+    * This gives the monitor its own screen
+    * instead of overwriting the user's normal
+    * terminal history.
+    *
+    * \033[?1049h = enter alternate screen
+    * \033[H     = move cursor to home position
+    * \033[?25l  = hide cursor
+    */
+    printf(
+        "\033[?1049h"
+    );
+
+    printf(
+        "\033[H"
+    );
+
+    printf(
+        "\033[?25l"
+    );
+
+    fflush(stdout);
+
+
+    /*
      * Continuously update monitor.
      */
     while (1)
     {
+        /*
+         * CPU MONITOR
+         */
+
         /*
          * First CPU snapshot.
          */
@@ -793,17 +1739,23 @@ int main(void)
                 MAX_PROCESSES
             );
 
-        if (first_count == -1)
+        if (
+            first_count == -1
+        )
         {
             return 1;
         }
 
 
         /*
-         * Wait one second.
+         * Wait for the configured
+         * sampling interval.
          */
-        sleep(
-            SAMPLE_INTERVAL
+        usleep(
+            (useconds_t)(
+                sample_interval *
+                1000000.0
+            )
         );
 
 
@@ -840,7 +1792,9 @@ int main(void)
                 MAX_PROCESSES
             );
 
-        if (second_count == -1)
+        if (
+            second_count == -1
+        )
         {
             return 1;
         }
@@ -850,12 +1804,18 @@ int main(void)
          * Calculate CPU percentage
          * for every process.
          */
+
+        //have to match processes by PID
+        //cant calculate a process' CPU usage if we cant find a match (no earlier/later measurement)
+
         for (
             int i = 0;
             i < second_count;
             i++
         )
         {
+            //for every process in the 2nd snapshot
+
             int first_index =
                 find_process(
                     first_snapshot,
@@ -863,12 +1823,16 @@ int main(void)
                     second_snapshot[i].pid
                 );
 
+            //we find the same PID in the first snapshot
+
 
             /*
              * Process did not exist
              * in the first snapshot.
              */
-            if (first_index == -1)
+            if (
+                first_index == -1
+            )
             {
                 continue;
             }
@@ -879,15 +1843,28 @@ int main(void)
                     first_index
                 ].cpu_time;
 
+            //get the CPU time from one second ago
+
+
             uint64_t second_cpu_time =
                 second_snapshot[
                     i
                 ].cpu_time;
 
+            //gets the current CPU time
+
 
             uint64_t cpu_time_delta =
                 second_cpu_time -
                 first_cpu_time;
+
+            //calculates CPU time consumed during the interval
+
+
+            //calculate the % of total CPU capacity used by this process during the sample interval
+
+            //the machine has multiple logical CPUs, so the total CPU capacity is
+            //number of logical CPUs * sample interval
 
 
             /*
@@ -897,11 +1874,18 @@ int main(void)
                 (double)cpu_time_delta /
                 1000000000.0;
 
+            //store the calculated CPU % in our process structure
+
 
             double cpu_percent =
-                (process_cpu_seconds /
-                 (double)SAMPLE_INTERVAL) *
+                (
+                    process_cpu_seconds /
+                    sample_interval
+                ) *
                 100.0;
+
+            //a process can use more than 100% CPU when it has multiple threads running on multiple CPU cores at the same time
+            //store the calculated CPU % in our process structure
 
 
             second_snapshot[i].cpu_percent =
@@ -937,14 +1921,80 @@ int main(void)
 
 
         /*
+         * Get current disk information.
+         */
+        DiskInfo disk_info;
+
+        if (
+            get_disk_info(
+                &disk_info
+            ) == -1
+        )
+        {
+            return 1;
+        }
+
+
+        /*
+         * Get current uptime.
+         */
+        UptimeInfo uptime_info;
+
+        if (
+            get_uptime(
+                &uptime_info
+            ) == -1
+        )
+        {
+            return 1;
+        }
+
+
+        /*
+         * Get current load average.
+         */
+        LoadAverage load_average;
+
+        if (
+            get_load_average(
+                &load_average
+            ) == -1
+        )
+        {
+            return 1;
+        }
+
+
+        /*
+         * Get current network statistics.
+         */
+        NetworkInfo network_info;
+
+        if (
+            get_network_info(
+                &network_info
+            ) == -1
+        )
+        {
+            return 1;
+        }
+
+
+        /*
          * Display monitor.
          */
         print_monitor(
             cpu_count,
             cpu_usage,
             &memory_info,
+            &disk_info,
+            &uptime_info,
+            &load_average,
+            &network_info,
             second_snapshot,
-            second_count
+            second_count,
+            top_processes,
+            sample_interval
         );
     }
 
